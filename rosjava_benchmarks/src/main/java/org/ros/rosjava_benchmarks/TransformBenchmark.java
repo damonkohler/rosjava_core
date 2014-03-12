@@ -64,7 +64,7 @@ public class TransformBenchmark extends AbstractNodeMain {
       protected void loop() throws InterruptedException {
         updateTransform(turtle1, connectedNode, frameTransformTree);
         updateTransform(turtle2, connectedNode, frameTransformTree);
-        frameTransformTree.transform("turtle1", "turtle2");
+        frameTransformTree.transform("turtle1", "turtle2", null);
         counter.incrementAndGet();
       }
     });

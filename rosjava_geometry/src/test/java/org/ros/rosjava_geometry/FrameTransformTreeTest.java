@@ -81,7 +81,7 @@ public class FrameTransformTreeTest {
     // Full tree transform.
     {
       FrameTransform frameTransform = frameTransformTree
-          .transform("baz", "foo");
+          .transform("baz", "foo", new Time());
       assertTrue(frameTransform != null);
       assertEquals(GraphName.of("baz"), frameTransform.getSourceFrame());
       assertEquals(GraphName.of("foo"), frameTransform.getTargetFrame());
@@ -91,7 +91,7 @@ public class FrameTransformTreeTest {
     // Same node transform.
     {
       FrameTransform frameTransform = frameTransformTree
-          .transform("baz", "baz");
+          .transform("baz", "baz", new Time());
       assertTrue(frameTransform != null);
       assertEquals(GraphName.of("baz"), frameTransform.getSourceFrame());
       assertEquals(GraphName.of("baz"), frameTransform.getTargetFrame());
@@ -101,7 +101,7 @@ public class FrameTransformTreeTest {
     // Same node transform.
     {
       FrameTransform frameTransform = frameTransformTree
-          .transform("bar", "bar");
+          .transform("bar", "bar", new Time());
       assertTrue(frameTransform != null);
       assertEquals(GraphName.of("bar"), frameTransform.getSourceFrame());
       assertEquals(GraphName.of("bar"), frameTransform.getTargetFrame());
@@ -111,7 +111,7 @@ public class FrameTransformTreeTest {
     // Root-to-root transform.
     {
       FrameTransform frameTransform = frameTransformTree
-          .transform("foo", "foo");
+          .transform("foo", "foo", new Time());
       assertTrue(frameTransform != null);
       assertEquals(GraphName.of("foo"), frameTransform.getSourceFrame());
       assertEquals(GraphName.of("foo"), frameTransform.getTargetFrame());
@@ -121,7 +121,7 @@ public class FrameTransformTreeTest {
     // Root-to-leaf transform.
     {
       FrameTransform frameTransform = frameTransformTree
-          .transform("foo", "baz");
+          .transform("foo", "baz", new Time());
       assertTrue(frameTransform != null);
       assertEquals(GraphName.of("foo"), frameTransform.getSourceFrame());
       assertEquals(GraphName.of("baz"), frameTransform.getTargetFrame());
@@ -178,14 +178,14 @@ public class FrameTransformTreeTest {
   public void testTransformBazToRoot() {
     updateFrameTransformTree();
     checkBazToFooTransform(frameTransformTree.transformToRoot(GraphName
-        .of("baz")));
+        .of("baz"), new Time()));
   }
 
   @Test
   public void testTransformBazToFoo() {
     updateFrameTransformTree();
-    checkBazToFooTransform(frameTransformTree.transform("baz", "foo"));
-    checkBazToFooTransform(frameTransformTree.transform("foo", "baz").invert());
+    checkBazToFooTransform(frameTransformTree.transform("baz", "foo", new Time()));
+    checkBazToFooTransform(frameTransformTree.transform("foo", "baz", new Time()).invert());
   }
 
   private void checkFuzToFooTransform(FrameTransform frameTransform) {
@@ -208,20 +208,20 @@ public class FrameTransformTreeTest {
   public void testTransformFuzToRoot() {
     updateFrameTransformTree();
     checkFuzToFooTransform(frameTransformTree.transformToRoot(GraphName
-        .of("fuz")));
+        .of("fuz"), new Time()));
   }
 
   @Test
   public void testTransformFuzToFoo() {
     updateFrameTransformTree();
-    checkFuzToFooTransform(frameTransformTree.transform("fuz", "foo"));
-    checkFuzToFooTransform(frameTransformTree.transform("foo", "fuz").invert());
+    checkFuzToFooTransform(frameTransformTree.transform("fuz", "foo", new Time()));
+    checkFuzToFooTransform(frameTransformTree.transform("foo", "fuz", new Time()).invert());
   }
 
   @Test
   public void testTransformBazToFuz() {
     updateFrameTransformTree();
-    FrameTransform frameTransform = frameTransformTree.transform("baz", "fuz");
+    FrameTransform frameTransform = frameTransformTree.transform("baz", "fuz", new Time());
     Transform transform = Transform.yRotation(Math.PI / 2).invert()
         .multiply(Transform.translation(1, 0, 0).invert())
         .multiply(Transform.translation(0, 1, 0))

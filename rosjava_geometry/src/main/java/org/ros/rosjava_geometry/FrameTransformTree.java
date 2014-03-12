@@ -21,7 +21,7 @@ import com.google.common.base.Preconditions;
 import com.google.common.collect.Maps;
 
 import geometry_msgs.TransformStamped;
-import org.ros.concurrent.CircularBlockingDeque;
+import org.ros.concurrent.TimeOrderedBuffer;
 import org.ros.message.Time;
 import org.ros.namespace.GraphName;
 
@@ -32,7 +32,7 @@ import java.util.Map;
  * <p>
  * {@link FrameTransformTree} does not currently support time travel. Lookups
  * always use the newest {@link TransformStamped}.
- *
+ * 
  * @author damonkohler@google.com (Damon Kohler)
  * @author moesenle@google.com (Lorenz Moesenlechner)
  */
@@ -43,15 +43,47 @@ public class FrameTransformTree {
   private final Object mutex;
 
   /**
-   * A {@link Map} of the most recent {@link LazyFrameTransform} by source
-   * frame. Lookups by target frame or by the pair of source and target are both
-   * unnecessary because every frame can only have exactly one target.
+   * Forces a relative GraphName to add support for tf2 while maintaining
+   * backward compatibility with tf.
    */
-  private final Map<GraphName, CircularBlockingDeque<LazyFrameTransform>> transforms;
+  private class LazyFrameTransformBuffers {
+    /**
+     * A {@link Map} of the most recent {@link LazyFrameTransform} by source
+     * frame. Lookups by target frame or by the pair of source and target are
+     * both unnecessary because every frame can only have exactly one target.
+     */
+    private final Map<GraphName, TimeOrderedBuffer<LazyFrameTransform>> buffers;
+
+    public LazyFrameTransformBuffers() {
+      buffers = Maps.newConcurrentMap();
+    }
+
+    public TimeOrderedBuffer<LazyFrameTransform> get(GraphName source) {
+      return buffers.get(source.toRelative());
+    }
+
+    public void add(GraphName source, LazyFrameTransform lazyFrameTransform) {
+      GraphName relativeSource = source.toRelative();
+      if (!buffers.containsKey(relativeSource)) {
+        buffers.put(relativeSource, new TimeOrderedBuffer<LazyFrameTransform>(
+            TRANSFORM_QUEUE_CAPACITY, new TimeOrderedBuffer.TimeProvider<LazyFrameTransform>() {
+              @Override
+              public Time get(LazyFrameTransform lazyFrameTransform) {
+                return lazyFrameTransform.get().getTime();
+              }
+            }));
+      }
+      synchronized (mutex) {
+        buffers.get(relativeSource).add(lazyFrameTransform);
+      }
+    }
+  }
+
+  LazyFrameTransformBuffers buffers;
 
   public FrameTransformTree() {
     mutex = new Object();
-    transforms = Maps.newConcurrentMap();
+    buffers = new LazyFrameTransformBuffers();
   }
 
   /**
@@ -61,7 +93,7 @@ public class FrameTransformTree {
    * Note that the tree is updated lazily. Modifications to the provided
    * {@link geometry_msgs.TransformStamped} message may cause unpredictable
    * results.
-   *
+   * 
    * @param transformStamped
    *          the {@link geometry_msgs.TransformStamped} message to update with
    */
@@ -69,7 +101,7 @@ public class FrameTransformTree {
     Preconditions.checkNotNull(transformStamped);
     GraphName source = GraphName.of(transformStamped.getChildFrameId());
     LazyFrameTransform lazyFrameTransform = new LazyFrameTransform(transformStamped);
-    add(source, lazyFrameTransform);
+    buffers.add(source, lazyFrameTransform);
   }
 
   @VisibleForTesting
@@ -77,24 +109,12 @@ public class FrameTransformTree {
     Preconditions.checkNotNull(frameTransform);
     GraphName source = frameTransform.getSourceFrame();
     LazyFrameTransform lazyFrameTransform = new LazyFrameTransform(frameTransform);
-    add(source, lazyFrameTransform);
-  }
-
-  private void add(GraphName source, LazyFrameTransform lazyFrameTransform) {
-    // This adds support for tf2 while maintaining backward compatibility with tf.
-    GraphName relativeSource = source.toRelative();
-    if (!transforms.containsKey(relativeSource)) {
-      transforms.put(relativeSource, new CircularBlockingDeque<LazyFrameTransform>(
-          TRANSFORM_QUEUE_CAPACITY));
-    }
-    synchronized (mutex) {
-      transforms.get(relativeSource).addFirst(lazyFrameTransform);
-    }
+    buffers.add(source, lazyFrameTransform);
   }
 
   /**
    * Returns the most recent {@link FrameTransform} for target {@code source}.
-   *
+   * 
    * @param source
    *          the frame to look up
    * @return the most recent {@link FrameTransform} for {@code source} or
@@ -102,16 +122,15 @@ public class FrameTransformTree {
    */
   public FrameTransform lookUp(GraphName source) {
     Preconditions.checkNotNull(source);
-    // This adds support for tf2 while maintaining backward compatibility with tf.
-    return getLatest(source.toRelative());
+    return getLatest(source);
   }
 
   private FrameTransform getLatest(GraphName source) {
-    CircularBlockingDeque<LazyFrameTransform> deque = transforms.get(source);
-    if (deque == null) {
+    TimeOrderedBuffer<LazyFrameTransform> timeOrderedBuffer = buffers.get(source);
+    if (timeOrderedBuffer == null) {
       return null;
     }
-    LazyFrameTransform lazyFrameTransform = deque.peekFirst();
+    LazyFrameTransform lazyFrameTransform = timeOrderedBuffer.getLatest();
     if (lazyFrameTransform == null) {
       return null;
     }
@@ -129,7 +148,7 @@ public class FrameTransformTree {
   /**
    * Returns the {@link FrameTransform} for {@code source} closest to
    * {@code time}.
-   *
+   * 
    * @param source
    *          the frame to look up
    * @param time
@@ -141,35 +160,15 @@ public class FrameTransformTree {
   public FrameTransform lookUp(GraphName source, Time time) {
     Preconditions.checkNotNull(source);
     Preconditions.checkNotNull(time);
-    return get(source, time);
-  }
-
-  // TODO(damonkohler): Use an efficient search.
-  private FrameTransform get(GraphName source, Time time) {
-    CircularBlockingDeque<LazyFrameTransform> deque = transforms.get(source);
-    if (deque == null) {
+    TimeOrderedBuffer<LazyFrameTransform> timeOrderedBuffer = buffers.get(source);
+    if (timeOrderedBuffer == null) {
       return null;
     }
-    LazyFrameTransform result = null;
-    synchronized (mutex) {
-      long offset = 0;
-      for (LazyFrameTransform lazyFrameTransform : deque) {
-        if (result == null) {
-          result = lazyFrameTransform;
-          offset = Math.abs(time.subtract(result.get().getTime()).totalNsecs());
-          continue;
-        }
-        long newOffset = Math.abs(time.subtract(lazyFrameTransform.get().getTime()).totalNsecs());
-        if (newOffset < offset) {
-          result = lazyFrameTransform;
-          offset = newOffset;
-        }
-      }
-    }
-    if (result == null) {
+    LazyFrameTransform lazyFrameTransform = timeOrderedBuffer.get(time);
+    if (lazyFrameTransform == null) {
       return null;
     }
-    return result.get();
+    return lazyFrameTransform.get();
   }
 
   /**
@@ -181,20 +180,22 @@ public class FrameTransformTree {
   }
 
   /**
+   * @param time TODO
    * @return the {@link FrameTransform} from source the frame to the target
    *         frame, or {@code null} if no {@link FrameTransform} could be found
    */
-  public FrameTransform transform(GraphName source, GraphName target) {
+  public FrameTransform transform(GraphName source, GraphName target, Time time) {
     Preconditions.checkNotNull(source);
     Preconditions.checkNotNull(target);
-    // This adds support for tf2 while maintaining backward compatibility with tf.
+    // This adds support for tf2 while maintaining backward compatibility with
+    // tf.
     GraphName relativeSource = source.toRelative();
     GraphName relativeTarget = target.toRelative();
     if (relativeSource.equals(relativeTarget)) {
-      return new FrameTransform(Transform.identity(), relativeSource, relativeTarget, null);
+      return new FrameTransform(Transform.identity(), relativeSource, relativeTarget, time);
     }
-    FrameTransform sourceToRoot = transformToRoot(relativeSource);
-    FrameTransform targetToRoot = transformToRoot(relativeTarget);
+    FrameTransform sourceToRoot = transformToRoot(relativeSource, time);
+    FrameTransform targetToRoot = transformToRoot(relativeTarget, time);
     if (sourceToRoot == null && targetToRoot == null) {
       return null;
     }
@@ -226,22 +227,25 @@ public class FrameTransformTree {
   }
 
   /**
-   * @see #transform(GraphName, GraphName)
+   * @param time TODO
+   * @see #transform(GraphName, GraphName, Time)
    */
-  public FrameTransform transform(String source, String target) {
+  public FrameTransform transform(String source, String target, Time time) {
     Preconditions.checkNotNull(source);
     Preconditions.checkNotNull(target);
-    return transform(GraphName.of(source), GraphName.of(target));
+    return transform(GraphName.of(source), GraphName.of(target), time);
   }
 
   /**
    * @param source
    *          the source frame
+   * @param time TODO
    * @return the {@link Transform} from {@code source} to root
    */
   @VisibleForTesting
-  FrameTransform transformToRoot(GraphName source) {
-    FrameTransform result = getLatest(source);
+  FrameTransform transformToRoot(GraphName source, Time time) {
+    Preconditions.checkArgument(source.isRelative());
+    FrameTransform result = lookUp(source, time);
     if (result == null) {
       return null;
     }
